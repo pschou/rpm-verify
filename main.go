@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path"
@@ -127,6 +128,8 @@ func main() {
 		hdrs = append(hdrs, hdr)
 	}
 
+	align(fi)
+
 	signer, err := openpgp.CheckDetachedSignature(keyring, fi, bytes.NewReader(pgpData))
 	if signer.PrimaryKey != nil {
 		for k, _ := range signer.Identities {
@@ -164,4 +167,11 @@ func getFiles(walkdir, suffix string) []string {
 		log.Fatal(err)
 	}
 	return ret
+}
+
+func align(r *os.File) error {
+	offset, _ := r.Seek(0, io.SeekCurrent)
+	i := (offset + 0x7) &^ 0x7
+	_, err := r.Seek(i, io.SeekStart)
+	return err
 }
