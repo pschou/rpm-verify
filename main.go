@@ -24,6 +24,8 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"tease"
+	"time"
 
 	rpm "github.com/pschou/go-rpm"
 	"golang.org/x/crypto/openpgp"
@@ -84,12 +86,13 @@ func main() {
 
 	fmt.Println("opening:", flag.Arg(0))
 
-	fi, err := os.Open(flag.Arg(0))
+	fileIn, err := os.Open(flag.Arg(0))
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	r := rpm.NewReader(fi)
+	tr := tease.NewReader(fileIn)
+	r := rpm.NewReader(tr)
 
 	var lead *rpm.Lead
 	if lead, err = r.Lead(); err != nil {
@@ -107,33 +110,54 @@ func main() {
 	)
 
 	var pgpData []byte
+	var offset int64
+	var buildTime time.Time
 
-	for i := 0; i < 1; i++ {
+	for i := 0; i < 2; i++ {
 		hdr, err = r.Next()
 		if err != nil {
 			fmt.Println("error parsing header:", err)
-			break
+			return
 		}
 		for _, t := range hdr.Tags {
-			if t.Count <= 2 {
-				continue
-			}
+			//fmt.Printf("%d %T\n", t.Tag, t)
 			switch t.Tag {
 			case rpm.RPMSIGTAG_PGP:
-				pgpData, _ = t.Bytes()
+				if t.Count > 2 {
+					pgpData, _ = t.Bytes()
+				}
 				//case rpm.RPMTAG_RSAHEADER:
 				//	rsaData, _ = t.Bytes()
+			case rpm.RPMTAG_BUILDTIME:
+				if iv, ok := t.Int32(); ok && len(iv) > 0 {
+					buildTime = time.Unix(int64(iv[0]), 0)
+				}
 			}
 		}
 		hdrs = append(hdrs, hdr)
+		if offset == 0 {
+			offset, _ = tr.Seek(0, io.SeekCurrent)
+		}
 	}
 
-	align(fi)
+	{ // Align on the 8 byte interval
+		i := (offset + 0x7) &^ 0x7
+		_, err = tr.Seek(i, io.SeekStart)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+	tr.Pipe()
+	//align(fi)
+	if !buildTime.IsZero() {
+		fmt.Println("Build time:", buildTime)
+		os.Chtimes(flag.Arg(0), buildTime, buildTime)
+	}
 
-	signer, err := openpgp.CheckDetachedSignature(keyring, fi, bytes.NewReader(pgpData))
-	if signer.PrimaryKey != nil {
+	signer, err := openpgp.CheckDetachedSignature(keyring, tr, bytes.NewReader(pgpData))
+	if signer != nil {
 		for k, _ := range signer.Identities {
-			fmt.Printf("Signed by: %s (%02x)\n", k, signer.PrimaryKey.KeyId)
+			fmt.Printf("Signed by: %s (0x%02X)\n", k, signer.PrimaryKey.KeyId)
 			os.Exit(0)
 		}
 	}
